@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import torch
@@ -48,8 +47,6 @@ def predict(req: PredictRequest):
 def health():
     return {"status": "ok"}
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
 @app.get("/")
 def serve_index():
-    return FileResponse("static/index.html")
+    return FileResponse("index.html")
