@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Language Detector</title>
+<style>
+  body { font-family: Arial, sans-serif; background:#11141a; color:#eef0f4; display:flex; justify-content:center; padding:60px 20px; }
+  .wrap { max-width:600px; width:100%; }
+  h1 { font-size:28px; margin-bottom:6px; }
+  p { color:#8a90a0; margin-bottom:24px; }
+  textarea { width:100%; min-height:120px; padding:12px; border-radius:8px; border:1px solid #2a2f3a; background:#181c24; color:#eef0f4; font-size:16px; box-sizing:border-box; }
+  button { margin-top:12px; background:#ffb454; border:none; padding:10px 20px; border-radius:6px; font-weight:bold; cursor:pointer; }
+  #result { margin-top:24px; }
+  .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #2a2f3a; }
+  .error { color:#ff8080; margin-top:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Language Detector</h1>
+  <p>Paste text below and detect its language.</p>
+  <textarea id="text" placeholder="Type or paste text here..."></textarea><br/>
+  <button id="btn">Detect language</button>
+  <div class="error" id="error" style="display:none;"></div>
+  <div id="result" style="display:none;"></div>
+</div>
+
+<script>
+  const btn = document.getElementById('btn');
+  const textEl = document.getElementById('text');
+  const resultEl = document.getElementById('result');
+  const errorEl = document.getElementById('error');
+
+  btn.addEventListener('click', async () => {
+    const text = textEl.value.trim();
+    errorEl.style.display = 'none';
+    if (!text) { errorEl.textContent = 'Type something first.'; errorEl.style.display='block'; return; }
+
+    btn.disabled = true; btn.textContent = 'Detecting...';
+    try {
+      const res = await fetch('/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      if (!res.ok) throw new Error('Request failed');
+      const data = await res.json();
+
+      let html = `<div class="row"><strong>${data.language}</strong><span>${(data.confidence*100).toFixed(1)}%</span></div>`;
+      data.top_5.forEach(item => {
+        html += `<div class="row"><span>${item.language}</span><span>${(item.confidence*100).toFixed(1)}%</span></div>`;
+      });
+      resultEl.innerHTML = html;
+      resultEl.style.display = 'block';
+    } catch (e) {
+      errorEl.textContent = 'Something went wrong. Is the API running?';
+      errorEl.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Detect language';
+    }
+  });
+</script>
+</body>
+</html>
