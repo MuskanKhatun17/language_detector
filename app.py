@@ -1,20 +1,17 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer
+from optimum.onnxruntime import ORTModelForSequenceClassification
+import numpy as np
+from scipy.special import softmax
 
-MODEL_NAME = "Muskan1304/xlmr-language-detector"
-MAX_LENGTH = 128
+MODEL_NAME = "Muskan1304/xlmr-language-detector-onnx"
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = ORTModelForSequenceClassification.from_pretrained(MODEL_NAME, file_name="model_quantized.onnx")
 
 app = FastAPI(title="Language Detection API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME).to(device)
-model.eval()
 
 class PredictRequest(BaseModel):
     text: str
@@ -30,18 +27,18 @@ def predict(req: PredictRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text field is empty.")
 
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=MAX_LENGTH).to(device)
-    with torch.no_grad():
-        logits = model(**inputs).logits
-        probs = torch.softmax(logits, dim=-1)[0]
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=128)
+    outputs = model(**inputs)
+    logits = outputs.logits.detach().numpy()[0]
+    probs = softmax(logits)
 
-    top_prob, top_id = torch.max(probs, dim=-1)
-    predicted_language = model.config.id2label[int(top_id)]
+    top_id = int(np.argmax(probs))
+    predicted_language = model.config.id2label[top_id]
 
-    top5_ids = torch.topk(probs, k=min(5, probs.shape[0])).indices.tolist()
-    top_5 = [{"language": model.config.id2label[i], "confidence": round(float(probs[i]), 4)} for i in top5_ids]
+    top5_ids = np.argsort(probs)[::-1][:5]
+    top_5 = [{"language": model.config.id2label[int(i)], "confidence": round(float(probs[i]), 4)} for i in top5_ids]
 
-    return PredictResponse(language=predicted_language, confidence=round(float(top_prob), 4), top_5=top_5)
+    return PredictResponse(language=predicted_language, confidence=round(float(probs[top_id]), 4), top_5=top_5)
 
 @app.get("/health")
 def health():
