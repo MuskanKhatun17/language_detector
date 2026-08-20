@@ -11,7 +11,6 @@ from scipy.special import softmax
 MODEL_REPO = "Muskan1304/xlmr-language-detector-onnx"
 MAX_LENGTH = 128
 
-# Download just the 3 files we actually need, straight from the Hub
 model_path = hf_hub_download(MODEL_REPO, "model_quantized.onnx")
 tokenizer_path = hf_hub_download(MODEL_REPO, "tokenizer.json")
 config_path = hf_hub_download(MODEL_REPO, "config.json")
@@ -24,7 +23,18 @@ with open(config_path) as f:
     config = json.load(f)
 id2label = {int(k): v for k, v in config["id2label"].items()}
 
-session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+# --- Memory-conscious ONNX Runtime session settings ---
+sess_options = ort.SessionOptions()
+sess_options.enable_mem_pattern = False       # don't pre-plan/pre-allocate memory patterns
+sess_options.enable_cpu_mem_arena = False     # don't use a growing memory arena, allocate as-needed
+sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+sess_options.intra_op_num_threads = 1         # avoid extra thread-pool memory overhead
+
+session = ort.InferenceSession(
+    model_path,
+    sess_options=sess_options,
+    providers=["CPUExecutionProvider"],
+)
 input_names = {i.name for i in session.get_inputs()}
 
 app = FastAPI(title="Language Detection API")
