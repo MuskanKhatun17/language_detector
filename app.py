@@ -1,15 +1,31 @@
+import json
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from transformers import AutoTokenizer
-from optimum.onnxruntime import ORTModelForSequenceClassification
-import numpy as np
+from huggingface_hub import hf_hub_download
+from tokenizers import Tokenizer
+import onnxruntime as ort
 from scipy.special import softmax
 
-MODEL_NAME = "Muskan1304/xlmr-language-detector-onnx"
+MODEL_REPO = "Muskan1304/xlmr-language-detector-onnx"
+MAX_LENGTH = 128
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = ORTModelForSequenceClassification.from_pretrained(MODEL_NAME, file_name="model_quantized.onnx")
+# Download just the 3 files we actually need, straight from the Hub
+model_path = hf_hub_download(MODEL_REPO, "model_quantized.onnx")
+tokenizer_path = hf_hub_download(MODEL_REPO, "tokenizer.json")
+config_path = hf_hub_download(MODEL_REPO, "config.json")
+
+tokenizer = Tokenizer.from_file(tokenizer_path)
+tokenizer.enable_truncation(max_length=MAX_LENGTH)
+tokenizer.enable_padding(length=MAX_LENGTH)
+
+with open(config_path) as f:
+    config = json.load(f)
+id2label = {int(k): v for k, v in config["id2label"].items()}
+
+session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+input_names = {i.name for i in session.get_inputs()}
 
 app = FastAPI(title="Language Detection API")
 
@@ -27,16 +43,22 @@ def predict(req: PredictRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text field is empty.")
 
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=128)
-    outputs = model(**inputs)
-    logits = outputs.logits.detach().numpy()[0]
+    enc = tokenizer.encode(text)
+    input_ids = np.array([enc.ids], dtype=np.int64)
+    attention_mask = np.array([enc.attention_mask], dtype=np.int64)
+
+    ort_inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
+    if "token_type_ids" in input_names:
+        ort_inputs["token_type_ids"] = np.zeros_like(input_ids)
+
+    logits = session.run(None, ort_inputs)[0][0]
     probs = softmax(logits)
 
     top_id = int(np.argmax(probs))
-    predicted_language = model.config.id2label[top_id]
+    predicted_language = id2label[top_id]
 
     top5_ids = np.argsort(probs)[::-1][:5]
-    top_5 = [{"language": model.config.id2label[int(i)], "confidence": round(float(probs[i]), 4)} for i in top5_ids]
+    top_5 = [{"language": id2label[int(i)], "confidence": round(float(probs[i]), 4)} for i in top5_ids]
 
     return PredictResponse(language=predicted_language, confidence=round(float(probs[top_id]), 4), top_5=top_5)
 
