@@ -1,41 +1,13 @@
-import json
-import numpy as np
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from huggingface_hub import hf_hub_download
-from tokenizers import Tokenizer
-import onnxruntime as ort
-from scipy.special import softmax
+from huggingface_hub import InferenceClient
 
-MODEL_REPO = "Muskan1304/xlmr-language-detector-onnx"
-MAX_LENGTH = 128
+MODEL_REPO = "Muskan1304/xlmr-language-detector"   # your original PyTorch model repo, not the ONNX one
+HF_TOKEN = os.environ.get("HF_TOKEN")               # set this in Render's Environment tab
 
-model_path = hf_hub_download(MODEL_REPO, "model_quantized.onnx")
-tokenizer_path = hf_hub_download(MODEL_REPO, "tokenizer.json")
-config_path = hf_hub_download(MODEL_REPO, "config.json")
-
-tokenizer = Tokenizer.from_file(tokenizer_path)
-tokenizer.enable_truncation(max_length=MAX_LENGTH)
-tokenizer.enable_padding(length=MAX_LENGTH)
-
-with open(config_path) as f:
-    config = json.load(f)
-id2label = {int(k): v for k, v in config["id2label"].items()}
-
-# --- Memory-conscious ONNX Runtime session settings ---
-sess_options = ort.SessionOptions()
-sess_options.enable_mem_pattern = False       # don't pre-plan/pre-allocate memory patterns
-sess_options.enable_cpu_mem_arena = False     # don't use a growing memory arena, allocate as-needed
-sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
-sess_options.intra_op_num_threads = 1         # avoid extra thread-pool memory overhead
-
-session = ort.InferenceSession(
-    model_path,
-    sess_options=sess_options,
-    providers=["CPUExecutionProvider"],
-)
-input_names = {i.name for i in session.get_inputs()}
+client = InferenceClient(model=MODEL_REPO, token=HF_TOKEN)
 
 app = FastAPI(title="Language Detection API")
 
@@ -53,24 +25,16 @@ def predict(req: PredictRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text field is empty.")
 
-    enc = tokenizer.encode(text)
-    input_ids = np.array([enc.ids], dtype=np.int64)
-    attention_mask = np.array([enc.attention_mask], dtype=np.int64)
+    try:
+        results = client.text_classification(text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Model service error: {e}")
 
-    ort_inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
-    if "token_type_ids" in input_names:
-        ort_inputs["token_type_ids"] = np.zeros_like(input_ids)
+    # results is a list of {"label": ..., "score": ...}, sorted by score already
+    top = results[0]
+    top_5 = [{"language": r["label"], "confidence": round(r["score"], 4)} for r in results[:5]]
 
-    logits = session.run(None, ort_inputs)[0][0]
-    probs = softmax(logits)
-
-    top_id = int(np.argmax(probs))
-    predicted_language = id2label[top_id]
-
-    top5_ids = np.argsort(probs)[::-1][:5]
-    top_5 = [{"language": id2label[int(i)], "confidence": round(float(probs[i]), 4)} for i in top5_ids]
-
-    return PredictResponse(language=predicted_language, confidence=round(float(probs[top_id]), 4), top_5=top_5)
+    return PredictResponse(language=top["label"], confidence=round(top["score"], 4), top_5=top_5)
 
 @app.get("/health")
 def health():
